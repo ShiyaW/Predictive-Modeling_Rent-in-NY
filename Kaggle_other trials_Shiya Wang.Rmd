@@ -1,0 +1,286 @@
+---
+title: "Kaggle_other trials"
+author: "Shiya Wang"
+date: "11/09/2021"
+output: html_document
+---
+
+# Data transformation tried 
+
+Transform transit with "train" or "subway" as 1, others as 0
+```{r}
+premium_transit = c("train","subway")
+pattern2 = paste(premium_transit,collapse="|")
+
+df$transit = ifelse(grepl(pattern2,df$transit),1,0)
+
+```
+
+Transform zipcode, matching zipcode with median market listing price of each zipcode (another dataset on zipcode housing price)
+```{r}
+library(data.table)
+library(stringr)
+
+# load market price dataset
+price_zip = fread('C:\\2. Course\\5200 AA Frameworks_Lala Fri\\Kaggle project\\RDC_Inventory_Core_Metrics_Zip_History.csv',select = c('month_date_yyyymm','postal_code','median_listing_price_per_square_foot'))
+
+# for airbnb dataset: clean the zipcode (e.g. "NY 10024" to "10024", "  10024" to "10024")
+df$zipcode = ifelse(startsWith(df$zipcode,'NY'),str_sub(df$zipcode, -5,-1),str_sub(df$zipcode,1,5))
+df$zipcode = ifelse(startsWith(df$zipcode,' '),gsub(' ','',df$zipcode),df$zipcode)
+
+# for market price dataset: calculate the average monthly median listing price in 2020
+price_zip = price_zip %>%
+  filter(startsWith(month_date_yyyymm,'2020'))
+price_zip$median_listing_price_per_square_foot[price_zip$median_listing_price_per_square_foot<=200] = NA
+
+x = tapply(price_zip$median_listing_price_per_square_foot,price_zip$postal_code,mean)
+y = data.frame(x)
+colnames(y) = 'median_price'
+price_NYzip = cbind(zipcode = rownames(y),y)
+rownames(price_NYzip) = 1:nrow(price_NYzip)
+head(price_NYzip)
+
+#merge airbnb dataset with market price dataset
+df = merge(df,price_NYzip,by='zipcode',all.x=TRUE)
+df$median_price[is.na(df$median_price)] = median(df$median_price, na.rm = TRUE)
+df = subset(df,select = -c(zipcode))
+price_zip[price_zip$postal_code=='10024',]
+
+```
+
+# indicator selection (exclude highly correlated variables)
+
+Check highly correlated variable
+```{r}
+colnames(df)
+# [4] "host_listings_count" [5] "host_total_listings_count" [39] "calculated_host_listings_count"[40] "calculated_host_listings_count_entire_homes" [41] "calculated_host_listings_count_private_rooms"
+df01 = df[,c(4,5,39:41,15)]
+# [20] "maximum_minimum_nights" [21] "minimum_maximum_nights" [22] "maximum_maximum_nights" [23] "minimum_nights_avg_ntm" [24] "maximum_nights_avg_ntm"  
+df02 = df[,c(20:24,15)]
+# [26] "availability_30" [27] "availability_60"[28] "availability_90" [29] "availability_365" 
+df03 = df[,c(26:29,15)]
+#[30] "number_of_reviews"[31] "number_of_reviews_ltm"  
+df04 = df[,c(30:31,15)]
+
+ggpairs(df01)
+#"host_listings_count" [5] "host_total_listings_count" =1; [39] "calculated_host_listings_count"[40] "calculated_host_listings_count_entire_homes**"=0.97
+ggpairs(df02)
+#[21] "minimum_maximum_nights" [22] "maximum_maximum_nights" [24] "maximum_nights_avg_ntm" = 1
+ggpairs(df03)
+# "availability_30**" "availability_60**" = 0.94;  "availability_60" "availability_90" = 0.97
+ggpairs(df04)
+```
+
+Exclude highly correlated variable
+```{r}
+#cor = 1
+df = subset(df,select = -c(host_total_listings_count))
+df = subset(df,select = -c(minimum_maximum_nights,maximum_maximum_nights))
+ncol(df)
+#cor > 0.9
+#df = subset(df,select = -c(calculated_host_listings_count,availability_60,availability_90))
+
+```
+
+threshold 0.02
+```{r}
+#df = subset(df,select = -c(host_is_superhost,maximum_minimum_nights,minimum_nights_avg_ntm,maximum_nights_avg_ntm,review_scores_checkin,reviews_per_month))
+```
+
+
+# Other models tried
+
+## SVM
+
+Linear SVM
+```{r}
+library(e1071)
+
+
+svmLinear = svm(price~.,data=train_dummy ,kernel='sigmoid') #,type='eps-regression', scale=FALSE)
+pred_train = predict(svmLinear,data=train_dummy)
+rmse_train = sqrt(mean((pred_train - train_dummy$price)^2)); rmse_train
+pred = predict(svmLinear,newdata=test_dummy)
+rmse = sqrt(mean((pred - test_dummy$price)^2)); rmse
+```
+
+
+```{r}
+library(e1071)
+
+svmRadial = svm(price~.,kernel='radial',data=train) #,kernel='linear',type='eps-regression'
+pred_train = predict(svmRadial,data=train)
+rmse_train = sqrt(mean((pred_train - train$price)^2)); rmse_train
+pred = predict(svmRadial,data=test)
+rmse = sqrt(mean((pred - test$price)^2)); rmse
+```
+
+
+Normalize numerical variables
+```{r}
+
+# normalize <- function(x, na.rm = TRUE) {
+#     return((x- min(x)) /(max(x)-min(x)))
+# }
+# y = c(1,3,5)
+# normalize(y)
+# 
+# data = as.data.frame(apply(df$host_listings_count, FUN = function(x) normalize(x)))
+# 
+# apply(X = train[,c(2:3,8:26)], MARGIN = 2, FUN = function(x) normalize(x))
+
+
+pp = preProcess(train[,-10],method="range")
+colnames(train)
+
+train_i = predict(pp,train[,-10])
+test_i = predict(pp,test[,-10])
+
+train_nmz = as.data.frame(cbind(price = train$price,train_i))
+test_nmz = as.data.frame(cbind(price = test$price,test_i))
+
+train_nmz
+
+```
+
+
+Dummy coding categorical variables
+```{r}
+colnames(train_nmz)
+dmy = dummyVars("~.",data = train_nmz[,-1])
+train_i2 = predict(dmy,newdata = train_nmz[,-1])
+train_dummy = as.data.frame(cbind(price = train_nmz$price,train_i2))
+
+dmy = dummyVars("~.",data = test_nmz[,-1])
+test_i2 = predict(dmy,newdata = test_nmz[,-1])
+test_dummy = as.data.frame(cbind(price = test_nmz$price,test_i2))
+
+```
+
+Radial SVM
+```{r}
+library(e1071)
+
+
+svmLinear = svm(price~.,data=train_dummy ,kernel='radial') #,type='eps-regression', scale=FALSE)
+pred_train = predict(svmLinear,data=train_dummy)
+rmse_train = sqrt(mean((pred_train - train_dummy$price)^2)); rmse_train
+pred = predict(svmLinear,newdata=test_dummy)
+rmse = sqrt(mean((pred - test_dummy$price)^2)); rmse
+```
+
+
+```{r}
+pred_test_ <- predict(svmLinear,newdata=test_dummy);
+rmse = sqrt(mean((pred_test_ - test_dummy$price)^2)); rmse
+head(pred_test)
+#head(pred_train)
+nrow(pred_train)
+
+mean(train_dummy$price);mean(test_dummy$price);
+mean(pred_train);mean(pred)
+```
+
+
+
+## Tree
+
+Default tree
+```{r}
+library(rpart); library(rpart.plot)
+tree = rpart(price~.,data = train, method = 'anova')
+pred_train = predict(tree)
+rmse_train_tree = sqrt(mean((pred_train - train$price)^2)); rmse_train_tree
+pred = predict(tree, newdata = test)
+rmse_tree = sqrt(mean((pred - test$price)^2)); rmse_tree
+```
+
+Tuned tree
+```{r}
+tuneGrid = expand.grid(cp = seq(0,0.1,0.001))
+trControl = trainControl(method = 'cv',number = 5)
+set.seed(1000)
+tree_cv = train(price~.,
+               data = train,
+               method = 'rpart',
+               trControl = trControl, 
+               tuneGrid = tuneGrid)
+```
+
+
+```{r}
+library(rpart); library(rpart.plot)
+tuned_tree = rpart(price~.,data = train, method = 'anova',cp=tree_cv$bestTune)
+pred_train = predict(tuned_tree)
+rmse_train_tuned_tree = sqrt(mean((pred_train - train$price)^2)); rmse_train_tuned_tree
+pred = predict(tuned_tree, newdata = test)
+rmse_tuned_tree = sqrt(mean((pred - test$price)^2)); rmse_tuned_tree
+```
+
+## Ranger
+
+ranger
+```{r}
+colnames(train)
+library(ranger)
+set.seed(1031)
+forest_ranger = ranger(price~.,
+                       data = train, 
+                       mtry = 25,
+                       num.trees = 500,
+                       )
+pred_train = predict(forest_ranger, data = train, num.trees = 500)
+rmse_train_forest_ranger = sqrt(mean((pred_train$predictions - train$price)^2)); rmse_train_forest_ranger
+pred = predict(forest_ranger, data = test, num.trees = 500)
+rmse_forest_ranger = sqrt(mean((pred$predictions - test$price)^2)); rmse_forest_ranger
+```
+
+tuned ranger
+```{r}
+library(ranger)
+trControl=trainControl(method='cv',number=5)
+tuneGrid=expand.grid(mtry=c(20,25,30,35),splitrule="variance",min.node.size=200)
+#c('variance','extratrees','maxstat')
+set.seed(1031)
+cvModel = train(price~.,
+                data = train, 
+                method='ranger',
+                num.trees = 500,
+                trControl=trControl,
+                tuneGrid=tuneGrid)
+cvModel$bestTune
+
+pred_train = predict(forest_ranger, data = train, num.trees = 1000)
+rmse_train_forest_ranger = sqrt(mean((pred_train$predictions - train$price)^2)); rmse_train_forest_ranger
+pred = predict(forest_ranger, data = test, num.trees = 1000)
+rmse_forest_ranger = sqrt(mean((pred$predictions - test$price)^2)); rmse_forest_ranger
+```
+
+## gbm
+
+tuned gbm
+```{r}
+library(caret)
+set.seed(1031)
+trControl = trainControl(method="cv",number=5)
+tuneGrid = expand.grid(n.trees = 500, 
+                       interaction.depth = c(1,2,3),
+                       shrinkage = c(0.001,0.01,0.1),
+                       n.minobsinnode=c(5,10,15))
+garbage = capture.output(cvModel <- train(price~.,
+                                          data=train,
+                                          method="gbm",
+                                          trControl=trControl, 
+                                          tuneGrid=tuneGrid))
+set.seed(1031)
+cvboost = gbm(price~.,
+              data=train,
+              distribution="gaussian",
+              n.trees=500,
+              interaction.depth=cvModel$bestTune$interaction.depth,
+              shrinkage=cvModel$bestTune$shrinkage,
+              n.minobsinnode = cvModel$bestTune$n.minobsinnode)
+
+pred_train = predict(cvboost, n.trees=500)
+rmse_train_cv_boost = sqrt(mean((pred_train - train$price)^2)); rmse_train_cv_boost
+```

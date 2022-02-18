@@ -1,0 +1,358 @@
+---
+title: "Kaggle_final version"
+author: "Shiya Wang"
+date: "11/11/2021"
+output: html_document
+---
+
+Import common libraries
+```{r}
+library(readr)
+library(dplyr)
+library(forcats)
+```
+
+Load data
+```{r}
+analysisData = read.csv('C:\\2. Course\\5200 AA Frameworks_Lala Fri\\rentlala2021\\analysisData.csv')
+scoringData = read.csv('C:\\2. Course\\5200 AA Frameworks_Lala Fri\\rentlala2021\\scoringData.csv')
+```
+
+Merge analysis & scoring data
+```{r}
+scoringData$price = 0
+df = rbind(analysisData,scoringData)
+ncol(df)
+```
+# First round of indicator screening
+
+Exclude variables that are obviously not related to price 
+```{r}
+df = subset(df,select = -c(host_name,host_location,host_neighbourhood,
+                           host_verifications))
+ncol(df)
+```
+
+Exclude variables of Near zero variance
+```{r}
+library(caret)
+x = nzv(df)
+df = df[,-x]
+ncol(df)
+
+```
+
+Exclude variables that have too many NAs
+```{r}
+#df = subset(df,select = -c(monthly_price))
+df = subset(df,select = -c(weekly_price,monthly_price,square_feet))
+```
+
+Exclude variables with long characters and no clue on possible transformation
+```{r}
+df = subset(df,select = -c(name,space,summary,description,transit,
+                            neighborhood_overview,notes,access,
+                           interaction,house_rules,host_about))
+ncol(df)
+```
+
+Exclude redundant location variables
+```{r}
+df = subset(df,select = -c(street,neighbourhood,city,smart_location))
+ncol(df)
+```
+
+```{r}
+str(df)
+```
+
+# Data transformation
+```{r}
+prop.table(table(df$host_response_time))
+df$host_response_time = as.factor(df$host_response_time)
+df$neighbourhood_group_cleansed = as.factor(df$neighbourhood_group_cleansed)
+```
+
+host_response_rate & host_acceptance_rate NA/blank to 0; chr to numeric
+```{r}
+df$host_response_rate[which(df$host_response_rate=='N/A')] = NA
+df$host_response_rate[which(df$host_response_rate=='')] = NA
+df$host_response_rate=parse_number(df$host_response_rate)
+```
+```{r}
+df$host_acceptance_rate[which(df$host_acceptance_rate=='N/A')] = NA
+df$host_acceptance_rate[which(df$host_acceptance_rate=='')] = NA
+df$host_acceptance_rate=parse_number(df$host_acceptance_rate)
+```
+
+host_is_superhost t/f/'' to 1/0
+```{r}
+df = df %>%
+  mutate(host_is_superhost = ifelse(host_is_superhost=='t',1,0))
+```
+
+host_identity_verified t/f to 1/0
+```{r}
+df = df %>%
+  mutate(host_identity_verified = ifelse(host_identity_verified=='t',1,0))
+```
+
+is_location_exact t/f to 1/0
+```{r}
+table(df$is_location_exact)
+df = df %>%
+  mutate(is_location_exact = ifelse(is_location_exact=='t',1,0))
+```
+
+property_type lump the infrequent into "other"
+```{r}
+df$property_type = fct_lump(f = df$property_type, prop = 0.03)
+```
+
+room_type lump the infrequent into "other"
+```{r}
+df$room_type = fct_lump(f = df$room_type, prop = 0.03)
+```
+
+instant_bookable t/f to 1/0
+```{r}
+df = df %>%
+  mutate(instant_bookable = ifelse(instant_bookable=='t',1,0))
+```
+
+cancellation_policy lump the infrequent into "other"
+```{r}
+df$cancellation_policy = fct_lump(f = df$cancellation_policy, prop = 0.03)
+```
+
+no. of amenities/ check if any premium amenities(washer,dryer,pool)
+```{r}
+df$no_amenities = lengths((strsplit(df$amenities,",")))
+
+premium = c("Dryer","Pool","Washer")
+pattern1 = paste(premium,collapse="|")
+
+df$premium_amenities = ifelse(grepl(pattern1,df$amenities),1,0)
+df = subset(df,select = -c(amenities))
+```
+
+Dates transformation: host_since, first_review, last_review, calendar_updated
+```{r}
+df$calendar_updated = ifelse(grepl("months ago",df$calendar_updated),0,1)
+table(df$calendar_updated)
+df$host_since = as.Date(df$host_since)
+df$first_review = as.Date(df$first_review)
+df$last_review = as.Date(df$last_review)
+
+```
+
+Group neighborhoods into 5 groups of different levels of housing price
+```{r}
+df$neighbourhood_cleansed = fct_collapse(df$neighbourhood_cleansed, 
+                                         '5' = c('Midtown', 'Chelsea','Flatiron District','West Village','SoHo','Tribeca','Battery Park City','Chinatown','Little Italy','NoHo','DUMBO','Brooklyn Heights','Cobble Hill','Carroll Gardens','Red Hook','Neponsit'), 
+                                         '4' = c('Upper West Side',"Hell's Kitchen",'Greenwich Village','Financial District','Gramercy','Upper East Side','Fort Greene','Clinton Hill','Greenpoint','Williamsburg','Vinegar Hill','Boerum Hill','Columbia St','Gowanus','Park Slope','Sunset Park','Windsor Terrace','Borough Park','Bensonhurst','Bath Beach','Mill Basin','Bedford-Stuyvesant','Bushwick','Bayside','Belle Harbor','Todt Hill','Mott Haven'),
+                                         '3'=c('Harlem','East Harlem','Morningside Heights','East Village','Lower East Side','Crown Heights','Bergen Beach','Manhattan Beach','Flatbush','Gravesend','Dyker Heights','East Elmhurst','College Point','Flushing','Whitestone','Little Neck','Fresh Meadows','Glendale','Middle Village','Ridgewood','Maspeth','Long Island City','Astoria','Corona','Tottenville','Belmont','Morris Heights','Mount Hope','Hunts Point','Morris Park'),
+                                         '2'=c('Washington Heights','Brownsville','East New York','East Flatbush','Canarsie','Flatlands','Sheepshead Bay','Brighton Beach','Bay Ridge','Kensington','Bay Terrace','Bellerose','Queens Village','Hollis','Cambria Heights','St. Albans','Laurelton','Rosedale','Springfield Gardens','Jamaica','Far Rockaway','Arverne','Jamaica Hills','South Ozone Park','Howard Beach','Ozone Park','Richmond Hill','Woodhaven','Elmhurst','Woodside','Randall Manor','New Brighton','Tompkinsville','Rosebank','Arrochar','Concord','South Beach','Dongan Hills','Midland Beach','New Dorp Beach','Oakwood','Lighthouse Hill','Bay Terrace, Staten Island','Great Kills','Eltingville','Rossville',"Bull's Head","Westerleigh","Castleton Corners","Woodlawn","Olinville","Williamsbridge","Wakefield","Edenwald","Allerton","Baychester","Eastchester","Co-op City","Pelham Gardens","City Island","Pelham Bay","Country Club","Schuylerville","Westchester Square","Throgs Neck","Unionport","Castle Hill","Clason Point","Soundview","Van Nest","West Farms","East Morrisania","Longwood","Morrisania","Mount Eden","Tremont","Fordham"),
+                                         '1'=c('Marble Hill','Midwood',"Coney Island","Glen Oaks","Jamaica Estates","Briarwood","Kew Gardens","Rego Park","Sunnyside","Jackson Heights","Forest Hills","Mariners Harbor","Graniteville","Port Richmond","West Brighton","Silver Lake","Stapleton","Clifton","Grymes Hill","Shore Acres","Arden Heights","New Springville","Fieldston","Riverdale","Norwood","Parkchester","Melrose","Concourse Village","Concourse","Highbridge","University Heights","Spuyten Duyvil","Kingsbridge"))
+table(df$neighbourhood_cleansed)
+
+df$neighbourhood_cleansed = fct_collapse(df$neighbourhood_cleansed,'4'=c("Bayswater","Breezy Point","Bronxdale","Civic Center","Claremont Village","Cypress Hills","Ditmars Steinway","Douglaston","Downtown Brooklyn","Edgemere","Emerson Hill","Fort Hamilton","Grant City","Holliswood","Howland Hook","Huguenot","Inwood","Kew Gardens Hills","Kips Bay","Murray Hill","Navy Yard","Nolita","North Riverdale","Port Morris","Prince's Bay","Prospect-Lefferts Gardens","Prospect Heights","Richmondtown","Rockaway Beach","Roosevelt Island","Sea Gate","South Slope","St. George","Stuyvesant Town","Theater District","Two Bridges","Willowbrook" ))
+levels(df$neighbourhood_cleansed)
+#df = subset(df,select = -c(neighbourhood_group_cleansed))
+```
+
+
+check remaining na
+```{r}
+apply(df,
+      MARGIN = 2, 
+      FUN = function(x) sum(is.na(x)))
+```
+
+N/A to median (except bed to bedroom)
+```{r}
+df$host_listings_count[is.na(df$host_listings_count)] = median(df$host_listings_count,na.rm = TRUE)
+
+df$cleaning_fee[is.na(df$cleaning_fee)] = median(df$cleaning_fee,na.rm = TRUE)
+df$security_deposit[is.na(df$security_deposit)] = median(df$security_deposit,na.rm = TRUE)
+df$reviews_per_month[is.na(df$reviews_per_month)] = median(df$reviews_per_month,na.rm = TRUE)
+
+df$beds <- ifelse(is.na(df$beds), df$bedrooms, df$beds)
+
+df$host_since[is.na(df$host_since)] = median(df$host_since,na.rm = TRUE)
+df$last_review[is.na(df$last_review)] = median(df$last_review,na.rm = TRUE)
+```
+
+
+# Second round of indictor screening 
+
+Subgroup to prepare for ggpairs
+```{r}
+ncol(df)
+colnames(df)
+str(df)
+df1 = df[,c(2:6,20)]
+df2 = df[,c(7:11,20)]
+df3 = df[,c(13:16,20)]
+df4 = df[,c(17:19,21:22,20)]
+df5 = df[,c(23:27,20)]
+df6 = df[,c(28:32,20)]
+df7 = df[,c(33:37,20)]
+df8 = df[,c(38:42,20)]
+df9 = df[,c(43:47,20)]
+df10 = df[,c(48:52,20)]
+df11 = df[,c(53:56,20)]
+```
+
+use ggpairs to check correlation with price
+```{r}
+library(GGally)
+ggpairs(df1)
+#exclude host_response_rate, host_acceptance_rate
+```
+
+```{r}
+ggpairs(df2)
+#exclude host_identity_verified
+```
+
+```{r}
+ggpairs(df3)
+#exclude is_location_exact
+```
+
+```{r}
+ggpairs(df4)
+```
+
+```{r}
+ggpairs(df5)
+#exclude minimum_nights,maximum_nights,minimum_minimum_nights
+```
+
+```{r}
+ggpairs(df6)
+```
+
+```{r}
+ggpairs(df7)
+```
+
+```{r}
+ggpairs(df8)
+#Exclude first_review
+```
+
+```{r}
+ggpairs(df9)
+```
+
+```{r}
+ggpairs(df10)
+#exclude review_scores_value,instant_bookable
+```
+
+```{r}
+ggpairs(df11)
+```
+
+use tree to see if a categorical variable split the tree
+```{r}
+library(rpart);library(rpart.plot)
+tree = rpart(price~neighbourhood_cleansed,df,method='anova') #set anova for decision tree
+rpart.plot(tree)
+```
+
+exclude variables according to ggpair & single decision tree
+```{r}
+df = subset(df,select = -c(host_response_time, host_response_rate, host_acceptance_rate))
+df = subset(df,select = -c(host_identity_verified,is_location_exact))
+df = subset(df,select = -c(minimum_nights,maximum_nights,minimum_minimum_nights))
+df = subset(df,select = -c(review_scores_value,instant_bookable,cancellation_policy))
+df = subset(df,select = -c(first_review))
+
+ncol(df)
+```
+# Building model
+
+Create test and train sample
+```{r}
+library(caret)
+df_analysis = df[1:41330,]
+set.seed(888)
+split = createDataPartition(y = df_analysis$price, p =0.75, list=F,groups=10)
+train = df_analysis[split,]
+test = df_analysis[-split,]
+```
+
+xgboost
+```{r}
+colnames(train)
+library(vtreat)
+#colnames(train)
+cols = c(2:12,14:35)
+#cols = c(2:9,11:18)
+trt = designTreatmentsZ(dframe = train,
+                        varlist = names(train)[cols])
+
+newvars = trt$scoreFrame[trt$scoreFrame$code%in% c('clean','lev'),'varName']
+
+train_input = prepare(treatmentplan = trt, 
+                      dframe = train,
+                      varRestriction = newvars)
+test_input = prepare(treatmentplan = trt, 
+                     dframe = test,
+                     varRestriction = newvars)
+
+library(xgboost); library(caret)
+set.seed(617)
+tune_nrounds = xgb.cv(data=as.matrix(train_input), 
+                      label = train$price,
+                      nrounds=250,
+                      nfold = 5,
+                      verbose = 0)
+which.min(tune_nrounds$evaluation_log$test_rmse_mean)
+
+xgboost2= xgboost(data=as.matrix(train_input), 
+                  label = train$price,
+                  nrounds=56,
+                  eta=0.15,
+                  max_depth=7,
+                  gamma=0.12,
+                  colsample_bytree=0.7,
+                  min_child_weight=16,
+                  subsample=1,
+                  verbose = 0)
+
+pred = predict(xgboost2, 
+               newdata=as.matrix(test_input))
+head(pred)
+rmse_xgboost = sqrt(mean((pred - test$price)^2)); rmse_xgboost
+pred_train = predict(xgboost2,newdata = as.matrix(train_input))
+rmse_xgboost_train = sqrt(mean((pred_train - train$price)^2)); rmse_xgboost_train
+                    
+```
+Tuning xgboost
+```{r}
+set.seed(1031)
+xgb_grid = expand.grid(nrounds=56,eta=0.15,max_depth=7,gamma=0.12,colsample_bytree=0.7,min_child_weight=16,subsample=c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1))
+xgb_control = trainControl(method='cv',number =5)
+xgb_train = train(price~.,data=train,method="xgbTree",trControl=xgb_control,tuneGrid=xgb_grid)
+xgb_train$bestTune
+```
+
+Write the result into submission file
+```{r}
+df_scoring = df[41331:nrow(df),]
+
+scoring_input = prepare(treatmentplan = trt, 
+                      dframe = df_scoring,
+                      varRestriction = newvars)
+
+pred = predict(xgboost2, 
+               newdata=as.matrix(scoring_input))
+
+
+submissionFile = data.frame(id = df_scoring$id, price = pred)
+write.csv(submissionFile, 'C:\\2. Course\\5200 AA Frameworks_Lala Fri\\rentlala2021\\sample_submission2.csv', row.names = F)
+```
